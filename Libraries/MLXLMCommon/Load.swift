@@ -384,8 +384,10 @@ public func loadWeights(
     // per-model cleanup (models can inspect metadata to customize behavior)
     weights = model.sanitize(weights: weights, metadata: metadata)
 
-    // quantize if needed
-    if quantization != nil || perLayerQuantization != nil {
+    let prismManifest = try PrismHadamardManifest.load(from: modelDirectory)
+    if let prismManifest {
+        try installPrismHadamardModules(prismManifest, model: model, weights: &weights)
+    } else if quantization != nil || perLayerQuantization != nil {
         quantize(model: model) { path, module in
             if weights["\(path).scales"] != nil {
                 if let perLayerQuantization {

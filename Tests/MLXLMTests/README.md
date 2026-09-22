@@ -36,3 +36,25 @@ ffmpeg \
 -write_tmcd true \
 -y audio_only.mov
 ```
+
+## Packed Qwen3.5 checkpoint integration
+
+`PrismHadamardLoaderTests` includes opt-in text and vision comparisons against the
+Python runtime bundled with a `prism_hadamard_qwen35` checkpoint. Download the
+checkpoint unchanged, then generate reference files in a Python environment with
+its required MLX/VLM dependencies:
+
+```sh
+python scripts/prism_hadamard_reference.py --model /path/to/checkpoint --output /tmp/packed-reference
+TEST_RUNNER_PRISM_HADAMARD_MODEL=/path/to/checkpoint \
+TEST_RUNNER_PRISM_HADAMARD_REFERENCE=/tmp/packed-reference \
+xcodebuild test -scheme mlx-swift-lm-Package -destination 'platform=macOS' \
+  -skipPackagePluginValidation -only-testing:MLXLMTests/PrismHadamardLoaderTests \
+  -configuration Release ENABLE_TESTABILITY=YES CODE_SIGNING_ALLOWED=NO
+```
+
+The tests compare greedy tokens and full-vocabulary logit KL for prefill and
+cached decoding. Vision uses identical Python-prepared pixels and prompt IDs;
+it tests model execution and factory processor selection, not independent
+Swift tokenizer or image-preprocessing parity. Without the environment variables,
+the checkpoint tests skip while the small loader validation tests still run.
