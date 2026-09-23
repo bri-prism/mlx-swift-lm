@@ -93,6 +93,7 @@ public enum VLMTypeRegistry {
         "qwen3_vl": create(Qwen3VLConfiguration.self, Qwen3VL.init),
         "qwen3_vl_moe": create(Qwen3VLMoEConfiguration.self, Qwen3VLMoE.init),
         "qwen3_5": create(Qwen35Configuration.self, Qwen35.init),
+        "prism_hadamard_qwen35": create(Qwen35Configuration.self, Qwen35.init),
         "qwen3_5_moe": create(Qwen35Configuration.self, Qwen35MoE.init),
         "idefics3": create(Idefics3Configuration.self, Idefics3.init),
         "gemma3": create(Gemma3Configuration.self, Gemma3.init),
@@ -442,7 +443,8 @@ public final class VLMModelFactory: GenericModelFactory {
         // but the config file is small and model loading is not a high-concurrency path.
         let processorLoadingContext = VLMProcessorLoadingContext(
             modelId: configuration.name,
-            modelType: baseConfig.modelType,
+            modelType: baseConfig.modelType == "prism_hadamard_qwen35"
+                ? "qwen3_5" : baseConfig.modelType,
             configurationData: configData)
         async let tokenizerTask = tokenizerLoader.load(
             from: configuration.tokenizerDirectory)
