@@ -75,6 +75,45 @@ public final class Qwen35MTPDraftModel: Module, StatefulMTPDrafterModel {
 
     @ModuleInfo(key: "mtp") var mtp: Qwen35MTPPredictor
 
+    /// Loads a standalone BF16 head with `mtp_config.json` and
+    /// `model_mtp.safetensors`, borrowing vocabulary and RoPE settings from its target.
+    public static func loadHead(
+        from directory: URL,
+        targetConfiguration: Qwen35TextConfiguration
+    ) throws -> Qwen35MTPDraftModel {
+        struct HeadConfiguration: Decodable {
+            let hidden_size: Int
+            let intermediate_size: Int
+            let num_attention_heads: Int
+            let num_key_value_heads: Int
+            let head_dim: Int
+            let num_mtp_layers: Int
+        }
+        let config = try JSONDecoder().decode(
+            HeadConfiguration.self,
+            from: Data(contentsOf: directory.appendingPathComponent("mtp_config.json")))
+        guard config.hidden_size == targetConfiguration.hiddenSize,
+            config.intermediate_size == targetConfiguration.intermediateSize,
+            config.num_attention_heads == targetConfiguration.attentionHeads,
+            config.num_key_value_heads == targetConfiguration.kvHeads,
+            config.head_dim == targetConfiguration.headDim,
+            config.num_mtp_layers > 0,
+            targetConfiguration.numExperts == 0
+        else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: [], debugDescription: "MTP head and target geometry differ"))
+        }
+        var configuration = targetConfiguration
+        configuration.mtpNumHiddenLayers = config.num_mtp_layers
+        configuration.mtpUseDedicatedEmbeddings = false
+        let model = Qwen35MTPDraftModel(configuration)
+        let weights = try loadArrays(
+            url: directory.appendingPathComponent("model_mtp.safetensors"))
+        try model.update(parameters: .unflattened(model.sanitize(weights: weights)), verify: [.all])
+        eval(model)
+        return model
+    }
+
     public init(
         _ configuration: Qwen35TextConfiguration,
         preconvertedNorms: Bool = false
