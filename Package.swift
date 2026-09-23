@@ -169,7 +169,12 @@ let package = Package(
             exclude: [
                 "README.md"
             ],
-            resources: [.process("Resources/1080p_30.mov"), .process("Resources/audio_only.mov")]
+            resources: [
+                .process("Resources/1080p_30.mov"), .process("Resources/audio_only.mov"),
+                .process("Resources/dflash2.safetensors"), .process("Resources/dflash2.json"),
+                .process("Resources/dflash2-forward.safetensors"),
+                .process("Resources/dflash2-forward.json"),
+            ]
         ),
         .macro(
             name: "MLXHuggingFaceMacros",
