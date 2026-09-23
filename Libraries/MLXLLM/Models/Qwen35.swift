@@ -918,9 +918,10 @@ public class Qwen35TextModelInner: Module {
         _ inputs: MLXArray,
         cache: [KVCache?]? = nil,
         applyFinalNorm: Bool,
-        checkpointAfter: Int? = nil
+        checkpointAfter: Int? = nil,
+        captureLayer: ((Int, MLXArray) -> Void)? = nil
     ) -> MLXArray {
-        if applyFinalNorm, inputs.dim(1) == 1, let caches = cache,
+        if captureLayer == nil, applyFinalNorm, inputs.dim(1) == 1, let caches = cache,
             let step = decodeStep(inputs, caches)
         {
             return step
@@ -944,6 +945,7 @@ public class Qwen35TextModelInner: Module {
             hiddenStates = layer(
                 hiddenStates, attentionMask: attnMask, ssmMask: mask, cache: cacheArray?[i],
                 checkpointAfter: checkpointAfter)
+            captureLayer?(i, hiddenStates)
         }
 
         return applyFinalNorm ? norm(hiddenStates) : hiddenStates
