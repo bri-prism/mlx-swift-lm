@@ -88,6 +88,33 @@ final class DFlash2Tests: XCTestCase {
             path.append(previous)
         }
         XCTAssertEqual(stacked(path, axis: 1).asArray(Int.self), arrays["path"]!.asArray(Int.self))
+        let fused = try XCTUnwrap(
+            DFlash2PathWalk.select(
+                candidates: ids[0 ..< 1], unary: unary[0 ..< 1],
+                projected: selector.projection(hidden[0 ..< 1]),
+                anchor: arrays["anchor"]![0 ..< 1].asType(.int32),
+                predecessor: selector.predecessor,
+                successor: selector.successor, beamWidth: 1))
+        XCTAssertEqual(fused.asArray(Int.self), arrays["path"]![0].asArray(Int.self))
+    }
+
+    func testBeamWalkKeepsDelayedEdge() throws {
+        let candidates = MLXArray([Int32(1), 2, 3, 4], [1, 2, 2])
+        let unary = MLXArray([Float(10), 9.5, 0, 0], [1, 2, 2])
+        let projected = MLXArray([Float(0), 1], [1, 2, 1])
+        let predecessor = MLXArray([Float(0), 0, 2, 0, 0], [5, 1])
+        let successor = MLXArray([Float(0), 0, 0, 0, 10], [5, 1])
+        let anchor = MLXArray([Int32(0)])
+        let greedy = try XCTUnwrap(
+            DFlash2PathWalk.select(
+                candidates: candidates, unary: unary, projected: projected, anchor: anchor,
+                predecessor: predecessor, successor: successor, beamWidth: 1))
+        let beam = try XCTUnwrap(
+            DFlash2PathWalk.select(
+                candidates: candidates, unary: unary, projected: projected, anchor: anchor,
+                predecessor: predecessor, successor: successor, beamWidth: 2))
+        XCTAssertEqual(greedy.asArray(Int.self), [1, 3])
+        XCTAssertEqual(beam.asArray(Int.self), [2, 4])
     }
 
     func testPublicCheckpointGreedyParity() async throws {

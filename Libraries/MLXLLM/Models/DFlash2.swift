@@ -311,6 +311,13 @@ public final class DFlash2DraftModel: Module {
         if let cap = d.final_logit_softcapping { logits = tanh(logits / cap) * cap }
         let candidates = argSort(-logits, axis: -1)[0..., 0..., ..<d.selector_top_k]
         let unary = takeAlong(logits, candidates, axis: -1)
+        if let path = DFlash2PathWalk.select(
+            candidates: candidates, unary: unary, projected: selector.projection(proposalHidden),
+            anchor: MLXArray([anchor]), predecessor: selector.predecessor,
+            successor: selector.successor)
+        {
+            return path.asArray(Int.self)
+        }
         var previous = MLXArray([anchor])
         var result = [Int]()
         for i in 0 ..< d.block_size - 1 {
@@ -325,6 +332,107 @@ public final class DFlash2DraftModel: Module {
         }
         return result
     }
+}
+
+/// Select a complete path in one Metal launch, reading only candidate codebook rows.
+/// Width one reproduces the greedy walk; larger widths retain alternate prefixes.
+enum DFlash2PathWalk {
+    static let width: Int = {
+        let value = ProcessInfo.processInfo.environment["MLX_DFLASH2_BEAM_WIDTH"]
+        guard let value, let parsed = Int(value), (1 ... 4).contains(parsed) else { return 0 }
+        return parsed
+    }()
+
+    static func select(
+        candidates: MLXArray, unary: MLXArray, projected: MLXArray, anchor: MLXArray,
+        predecessor: MLXArray, successor: MLXArray, beamWidth: Int = width
+    ) -> MLXArray? {
+        guard (1 ... 4).contains(beamWidth), candidates.ndim == 3,
+            candidates.dim(0) == 1, anchor.size == 1
+        else { return nil }
+        let length = candidates.dim(1)
+        let k = candidates.dim(2)
+        let rank = projected.dim(-1)
+        guard length >= 2, length <= 16, k >= 1, k <= 32, rank > 0 else { return nil }
+        return kernel(
+            [predecessor, successor, projected, unary, candidates, anchor],
+            template: [("L", length), ("K", k), ("R", rank), ("BW", beamWidth)],
+            grid: (32, 1, 1), threadGroup: (32, 1, 1),
+            outputShapes: [[length]], outputDTypes: [.int32])[0]
+    }
+
+    private static let kernel = MLXFast.metalKernel(
+        name: "dflash2_candidate_path_walk",
+        inputNames: ["predecessor", "successor", "projected", "unary", "cand", "anchor"],
+        outputNames: ["path"],
+        source: """
+            const uint c = thread_index_in_simdgroup;
+            threadgroup float beam_score[BW];
+            threadgroup uint beam_slot[BW];
+            threadgroup uint beam_path[2][BW][L];
+            if (c == 0) { beam_score[0] = 0.0f; beam_slot[0] = 0; }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            uint active = 1;
+            for (uint i = 0; i < L; i++) {
+                float expansion[BW];
+                for (uint p = 0; p < BW; p++) {
+                    float score = -INFINITY;
+                    if (p < active && c < K) {
+                        const uint pred_id = i == 0 ? uint(anchor[0])
+                            : uint(cand[(i - 1) * K + beam_slot[p]]);
+                        const uint succ_id = uint(cand[i * K + c]);
+                        auto pred_ptr = predecessor + size_t(pred_id) * R;
+                        auto succ_ptr = successor + size_t(succ_id) * R;
+                        auto proj_ptr = projected + i * R;
+                        float edge = 0.0f;
+                        for (uint d = 0; d < R; d++) {
+                            edge += (float(pred_ptr[d]) * float(proj_ptr[d])) * float(succ_ptr[d]);
+                        }
+                        score = float(unary[i * K + c]) + edge;
+                    }
+                    if (p < active) {
+                        if (BW > 1) {
+                            const float m = simd_max(score);
+                            const float z = simd_sum(exp(score - m));
+                            score -= m + log(z);
+                        }
+                        score += beam_score[p];
+                    }
+                    expansion[p] = score;
+                }
+                const uint next_active = min(uint(BW), active * uint(K));
+                for (uint b = 0; b < next_active; b++) {
+                    float best_score = -INFINITY;
+                    uint best_parent = 0xffffffffu;
+                    uint best_candidate = 0xffffffffu;
+                    for (uint p = 0; p < BW; p++) {
+                        float m = simd_max(expansion[p]);
+                        uint slot = simd_min((c < K && expansion[p] == m)
+                            ? c : 0xffffffffu);
+                        if (p < active && (m > best_score
+                            || (m == best_score && p < best_parent))) {
+                            best_score = m;
+                            best_parent = p;
+                            best_candidate = slot;
+                        }
+                    }
+                    if (c == best_candidate) expansion[best_parent] = -INFINITY;
+                    if (c == 0) {
+                        beam_score[b] = best_score;
+                        beam_slot[b] = best_candidate;
+                        for (uint j = 0; j < i; j++) {
+                            beam_path[(i + 1) & 1][b][j] = beam_path[i & 1][best_parent][j];
+                        }
+                        beam_path[(i + 1) & 1][b][i] = uint(cand[i * K + best_candidate]);
+                    }
+                }
+                active = next_active;
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+            }
+            if (c == 0) {
+                for (uint i = 0; i < L; i++) path[i] = int(beam_path[L & 1][0][i]);
+            }
+            """)
 }
 
 extension Qwen35TextModel {
